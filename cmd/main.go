@@ -19,6 +19,7 @@ package main
 import (
 	"crypto/tls"
 	"flag"
+	"fmt"
 	"os"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
@@ -37,6 +38,7 @@ import (
 
 	ingestv1alpha1 "github.com/JackFurton/sluice/api/v1alpha1"
 	"github.com/JackFurton/sluice/internal/controller"
+	"github.com/JackFurton/sluice/internal/version"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -60,12 +62,14 @@ func main() {
 	var enableLeaderElection bool
 	var probeAddr string
 	var workerImage string
+	var showVersion bool
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
+	flag.BoolVar(&showVersion, "version", false, "Print the version and exit.")
 	flag.StringVar(&workerImage, "worker-image", controller.DefaultWorkerImage,
 		"The image run pods use when an IngestionSource does not name one. It ships the worker as /worker.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
@@ -88,7 +92,13 @@ func main() {
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 
+	if showVersion {
+		fmt.Println(version.String())
+		return
+	}
+
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+	setupLog.Info("starting", "version", version.String())
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will

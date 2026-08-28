@@ -21,6 +21,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strconv"
+	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -37,6 +39,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	ingestv1alpha1 "github.com/JackFurton/sluice/api/v1alpha1"
+	"github.com/JackFurton/sluice/internal/metrics"
 	"github.com/JackFurton/sluice/internal/runspec"
 )
 
@@ -76,6 +79,12 @@ func (r *IngestionSourceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 	var src ingestv1alpha1.IngestionSource
 	if err := r.Get(ctx, req.NamespacedName, &src); err != nil {
+		if apierrors.IsNotFound(err) {
+			// Series for a deleted source are dropped, or its watermark lag
+			// climbs forever and eventually pages someone about a source that
+			// no longer exists.
+			metrics.Forget(req.Namespace, req.Name)
+		}
 		// Owned objects carry a controller reference, so deletion is garbage
 		// collection's job. There is nothing outside the cluster to clean up,
 		// which is why this controller has no finalizer: adding one would only
@@ -137,6 +146,7 @@ func (r *IngestionSourceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 
 	r.setConditions(&src, status, suspend, autoSuspended, backfilling)
+	r.publish(&src, status, suspend, autoSuspended)
 
 	if err := r.writeStatus(ctx, &src, status); err != nil {
 		return ctrl.Result{}, err
@@ -310,7 +320,7 @@ func (r *IngestionSourceReconciler) collectRuns(ctx context.Context, src *ingest
 	})
 
 	for _, job := range finished {
-		run, err := r.runStatus(ctx, job)
+		run, err := r.runStatus(ctx, src, job)
 		if err != nil {
 			return err
 		}
@@ -335,6 +345,7 @@ func (r *IngestionSourceReconciler) collectRuns(ctx context.Context, src *ingest
 func (r *IngestionSourceReconciler) applyRun(src *ingestv1alpha1.IngestionSource, status *ingestv1alpha1.IngestionSourceStatus, run *ingestv1alpha1.RunStatus) {
 	status.LastRun = run
 	status.TotalRowsIngested += run.RowsIngested
+	r.observeRun(src, run)
 
 	if run.Result != ingestv1alpha1.RunSucceeded {
 		status.ConsecutiveFailures++
@@ -368,7 +379,7 @@ func (r *IngestionSourceReconciler) applyRun(src *ingestv1alpha1.IngestionSource
 // runStatus reads what a finished Job actually did out of its pod's
 // termination message, falling back to the Job's own conditions when the
 // worker died before it could report.
-func (r *IngestionSourceReconciler) runStatus(ctx context.Context, job *batchv1.Job) (*ingestv1alpha1.RunStatus, error) {
+func (r *IngestionSourceReconciler) runStatus(ctx context.Context, src *ingestv1alpha1.IngestionSource, job *batchv1.Job) (*ingestv1alpha1.RunStatus, error) {
 	run := &ingestv1alpha1.RunStatus{
 		JobName:    job.Name,
 		StartTime:  job.Status.StartTime,
@@ -405,6 +416,13 @@ func (r *IngestionSourceReconciler) runStatus(ctx context.Context, job *batchv1.
 		run.Message = result.Error
 	case result.SchemaChange != nil && !result.SchemaChange.Empty():
 		run.Message = "record shape changed: " + result.SchemaChange.String()
+	}
+	if change := result.SchemaChange; change != nil && !change.Empty() {
+		kind := "additive"
+		if change.Breaking() {
+			kind = "breaking"
+		}
+		metrics.SchemaChanges.WithLabelValues(src.Namespace, src.Name, kind).Inc()
 	}
 	return run, nil
 }
@@ -464,6 +482,92 @@ func (r *IngestionSourceReconciler) markAccounted(ctx context.Context, job *batc
 		return fmt.Errorf("mark Job %s accounted: %w", job.Name, err)
 	}
 	return nil
+}
+
+// observeRun records what a finished run did. Counters only move here, when a
+// run has actually ended, so the numbers never include a run still in flight.
+func (r *IngestionSourceReconciler) observeRun(src *ingestv1alpha1.IngestionSource, run *ingestv1alpha1.RunStatus) {
+	namespace, name := src.Namespace, src.Name
+
+	kind := runTypeScheduled
+	if run.BackfillID != "" {
+		kind = runTypeBackfill
+	}
+	result := "failed"
+	if run.Result == ingestv1alpha1.RunSucceeded {
+		result = "succeeded"
+	}
+	metrics.Runs.WithLabelValues(namespace, name, result, kind).Inc()
+
+	if run.RowsIngested > 0 {
+		metrics.RowsIngested.WithLabelValues(namespace, name).Add(float64(run.RowsIngested))
+	}
+	if run.RowsRejected > 0 {
+		metrics.RowsRejected.WithLabelValues(namespace, name).Add(float64(run.RowsRejected))
+	}
+	if run.RequestCount > 0 {
+		metrics.UpstreamRequests.WithLabelValues(namespace, name).Add(float64(run.RequestCount))
+	}
+	if run.StartTime != nil && run.CompletionTime != nil {
+		seconds := run.CompletionTime.Sub(run.StartTime.Time).Seconds()
+		if seconds >= 0 {
+			metrics.RunDuration.WithLabelValues(namespace, name).Observe(seconds)
+		}
+	}
+}
+
+// publish mirrors the parts of status that are worth alerting on.
+func (r *IngestionSourceReconciler) publish(src *ingestv1alpha1.IngestionSource, status *ingestv1alpha1.IngestionSourceStatus, suspend, autoSuspended bool) {
+	namespace, name := src.Namespace, src.Name
+
+	metrics.ConsecutiveFailures.WithLabelValues(namespace, name).Set(float64(status.ConsecutiveFailures))
+
+	// An operator pausing a source and the controller giving up on one are
+	// very different events, so they are separate series rather than one gauge
+	// somebody has to correlate with an event log.
+	metrics.Suspended.WithLabelValues(namespace, name, "requested").Set(boolValue(suspend && !autoSuspended))
+	metrics.Suspended.WithLabelValues(namespace, name, "failures").Set(boolValue(autoSuspended))
+
+	// Runs that succeed while reading a window that stopped advancing are the
+	// failure no other signal catches, so the lag is reported even when
+	// everything looks healthy.
+	if lag, ok := watermarkLag(src, status); ok {
+		metrics.WatermarkLagSeconds.WithLabelValues(namespace, name).Set(lag)
+	}
+}
+
+// watermarkLag reports how far behind the present the resume point is. Only an
+// RFC3339 watermark can be compared to a clock; unix seconds could be, but an
+// opaque cursor carries no time at all and guessing would be worse than
+// reporting nothing.
+func watermarkLag(src *ingestv1alpha1.IngestionSource, status *ingestv1alpha1.IngestionSourceStatus) (float64, bool) {
+	wm := src.Spec.Watermark
+	if wm == nil || status.Watermark == "" {
+		return 0, false
+	}
+	switch wm.Format {
+	case "", ingestv1alpha1.WatermarkRFC3339:
+		parsed, err := time.Parse(time.RFC3339, status.Watermark)
+		if err != nil {
+			return 0, false
+		}
+		return time.Since(parsed).Seconds(), true
+	case ingestv1alpha1.WatermarkUnixSeconds:
+		seconds, err := strconv.ParseInt(status.Watermark, 10, 64)
+		if err != nil {
+			return 0, false
+		}
+		return time.Since(time.Unix(seconds, 0)).Seconds(), true
+	default:
+		return 0, false
+	}
+}
+
+func boolValue(value bool) float64 {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func (r *IngestionSourceReconciler) setConditions(src *ingestv1alpha1.IngestionSource, status *ingestv1alpha1.IngestionSourceStatus, suspend, autoSuspended, backfilling bool) {

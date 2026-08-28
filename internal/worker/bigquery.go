@@ -28,6 +28,7 @@ import (
 
 	"cloud.google.com/go/bigquery"
 	"google.golang.org/api/googleapi"
+	"google.golang.org/api/option"
 
 	"github.com/JackFurton/sluice/internal/runspec"
 )
@@ -53,8 +54,8 @@ type BigQuerySink struct {
 // Credentials come from Application Default Credentials, which on GKE means
 // the Workload Identity binding on the run pod's service account. The operator
 // never handles a service account key.
-func NewBigQuerySink(ctx context.Context, cfg runspec.BigQueryConfig, fields map[string]string) (*BigQuerySink, error) {
-	client, err := bigquery.NewClient(ctx, cfg.ProjectID)
+func NewBigQuerySink(ctx context.Context, cfg runspec.BigQueryConfig, fields map[string]string, opts ...option.ClientOption) (*BigQuerySink, error) {
+	client, err := bigquery.NewClient(ctx, cfg.ProjectID, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("bigquery client: %w", err)
 	}

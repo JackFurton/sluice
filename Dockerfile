@@ -7,6 +7,8 @@
 FROM golang:1.26 AS builder
 ARG TARGETOS
 ARG TARGETARCH
+# Stamped into the manager so a running pod can say what it is.
+ARG VERSION=dev
 
 WORKDIR /workspace
 COPY go.mod go.mod
@@ -15,9 +17,9 @@ RUN go mod download
 
 COPY . .
 
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o manager cmd/main.go
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o worker cmd/worker/main.go
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o fakeapi cmd/fakeapi/main.go
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -ldflags "-s -w -X github.com/JackFurton/sluice/internal/version.Version=${VERSION}" -o manager cmd/main.go
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -ldflags "-s -w" -o worker cmd/worker/main.go
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -ldflags "-s -w" -o fakeapi cmd/fakeapi/main.go
 
 FROM gcr.io/distroless/static:nonroot
 WORKDIR /

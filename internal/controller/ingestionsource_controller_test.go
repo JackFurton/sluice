@@ -19,6 +19,7 @@ package controller
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -35,7 +36,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
+
 	ingestv1alpha1 "github.com/JackFurton/sluice/api/v1alpha1"
+	"github.com/JackFurton/sluice/internal/metrics"
 	"github.com/JackFurton/sluice/internal/runspec"
 )
 
@@ -481,6 +486,32 @@ var _ = Describe("IngestionSource Controller", func() {
 		Expect(apierrors.IsNotFound(err)).To(BeTrue())
 	})
 
+	It("reports rows, runs and watermark lag as metrics", func() {
+		reconcile()
+		completeRun("a", true, runspec.RunResult{
+			RowsIngested: 40,
+			RowsRejected: 2,
+			RequestCount: 5,
+			Watermark:    time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339),
+		}, "")
+		reconcile()
+
+		labels := prometheus.Labels{"namespace": namespace, "source": name}
+		Expect(counterValue(metrics.RowsIngested.With(labels))).To(Equal(40.0))
+		Expect(counterValue(metrics.RowsRejected.With(labels))).To(Equal(2.0))
+		Expect(counterValue(metrics.UpstreamRequests.With(labels))).To(Equal(5.0))
+		Expect(counterValue(metrics.Runs.WithLabelValues(namespace, name, "succeeded", runTypeScheduled))).To(Equal(1.0))
+
+		// The failure no other signal catches: runs that succeed while reading
+		// a window that stopped advancing.
+		lag := gaugeValue(metrics.WatermarkLagSeconds.With(labels))
+		Expect(lag).To(BeNumerically("~", 2*time.Hour.Seconds(), 60))
+
+		// A deleted source must stop reporting, or its lag climbs forever.
+		metrics.Forget(namespace, name)
+		Expect(gaugeValue(metrics.WatermarkLagSeconds.With(labels))).To(BeZero())
+	})
+
 	It("ignores a source that no longer exists", func() {
 		var src ingestv1alpha1.IngestionSource
 		Expect(k8sClient.Get(ctx, key, &src)).To(Succeed())
@@ -490,6 +521,24 @@ var _ = Describe("IngestionSource Controller", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 })
+
+// counterValue and gaugeValue read a collector back, which is the only way to
+// assert on a metric without scraping the endpoint.
+func counterValue(counter prometheus.Counter) float64 {
+	var out dto.Metric
+	if err := counter.Write(&out); err != nil {
+		return -1
+	}
+	return out.GetCounter().GetValue()
+}
+
+func gaugeValue(gauge prometheus.Gauge) float64 {
+	var out dto.Metric
+	if err := gauge.Write(&out); err != nil {
+		return -1
+	}
+	return out.GetGauge().GetValue()
+}
 
 func conditionStatus(conditions []metav1.Condition, conditionType string) metav1.ConditionStatus {
 	for _, c := range conditions {

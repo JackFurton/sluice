@@ -1,0 +1,25 @@
+name: BigQuery
+
+on:
+  push:
+  pull_request:
+
+permissions: {}
+
+jobs:
+  sink:
+    name: Sink against the emulator
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: go.mod
+      # The BigQuery sink is the part of this operator that touches a real
+      # warehouse. Running it against the emulator is the difference between
+      # "it compiles" and "it writes rows".
+      - run: make test-bigquery

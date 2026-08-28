@@ -1,5 +1,9 @@
 # sluice
 
+[![Tests](https://github.com/JackFurton/sluice/actions/workflows/test.yml/badge.svg)](https://github.com/JackFurton/sluice/actions/workflows/test.yml)
+[![E2E](https://github.com/JackFurton/sluice/actions/workflows/test-e2e.yml/badge.svg)](https://github.com/JackFurton/sluice/actions/workflows/test-e2e.yml)
+[![BigQuery](https://github.com/JackFurton/sluice/actions/workflows/bigquery.yml/badge.svg)](https://github.com/JackFurton/sluice/actions/workflows/bigquery.yml)
+
 A Kubernetes operator for pulling vendor APIs into BigQuery on a schedule.
 
 You declare an `IngestionSource`: where to pull from, how often, and where the
@@ -116,6 +120,29 @@ walk, so a vendor bug does not become a runaway Job.
 backoff, honoring `Retry-After`. `4xx` is not retried, because it will not
 start working. `maxRequestsPerSecond` throttles the run.
 
+## What it reports
+
+Alongside the controller-runtime defaults, every source exports:
+
+| Metric | Why it exists |
+| --- | --- |
+| `sluice_rows_ingested_total` | The number an operator actually watches |
+| `sluice_rows_rejected_total` | Nonzero with healthy runs is a schema problem that has not become an outage yet |
+| `sluice_runs_total{result,kind}` | A failing backfill does not look like a failing schedule |
+| `sluice_run_duration_seconds` | Nightly pulls that are creeping toward their window |
+| `sluice_upstream_requests_total` | What to answer with when a vendor asks about their rate limit |
+| `sluice_schema_changes_total{kind}` | Additive and breaking counted separately |
+| `sluice_watermark_lag_seconds` | The one below |
+| `sluice_consecutive_failures` | Alert before the source suspends itself, not after |
+| `sluice_suspended{reason}` | Distinguishes an operator pausing a source from the controller giving up |
+
+Watermark lag is the metric worth alerting on. Runs that fail are loud; runs
+that succeed, report rows, and are quietly reading a window that stopped
+advancing are the ones nothing else catches.
+
+Series for a deleted IngestionSource are dropped, so its lag does not climb
+forever after it is gone.
+
 ## How it fits together
 
 ```
@@ -171,9 +198,12 @@ key.
 ## Install
 
 ```bash
-make install                        # CRDs
-make deploy IMG=<your-image>        # controller
+make install                                              # CRDs
+make deploy IMG=ghcr.io/jackfurton/sluice:latest          # controller
 ```
+
+Images are published to `ghcr.io/jackfurton/sluice` on every tag, for
+`linux/amd64` and `linux/arm64`.
 
 The image ships three binaries: `/manager`, `/worker`, and `/fakeapi`. Run pods
 default to the controller's own image with the entrypoint overridden, so a
@@ -182,8 +212,9 @@ default to the controller's own image with the entrypoint overridden, so a
 ## Development
 
 ```bash
-make test        # unit tests plus an envtest suite against a real API server
-make test-e2e    # kind cluster, deployed operator
+make test           # unit tests plus an envtest suite against a real API server
+make test-bigquery  # the BigQuery sink against the BigQuery emulator
+make test-e2e       # kind cluster, deployed operator
 make lint
 ```
 
@@ -192,10 +223,17 @@ run exactly once, folding a run created by the CronJob controller (which owns
 it, rather than the IngestionSource) into status, suspending on a failure
 streak, and refusing to re-run a completed backfill.
 
+The BigQuery sink runs against the emulator rather than a fake, because a fake
+would only prove that the fake matches the code. It covers creating a table
+from an observed record shape, storing nested values as JSON, refusing to
+create a table when told not to, and truncating.
+
 ## Status
 
-`v1alpha1`, and the API may change. The HTTP source and the BigQuery and stdout
-destinations are implemented; nothing else is.
+`v1alpha1`, and the API may change before v1. The HTTP source and the BigQuery
+and stdout destinations are implemented; nothing else is. See the
+[open issues](https://github.com/JackFurton/sluice/issues) for what is planned
+and why.
 
 ## License
 
