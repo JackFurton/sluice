@@ -7,7 +7,7 @@
 # Pinned to the build platform so the Go toolchain runs natively and
 # cross-compiles, rather than the whole builder stage running under QEMU. On a
 # multi-arch build that is the difference between two minutes and twenty.
-FROM --platform=$BUILDPLATFORM golang:1.26 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27 AS builder
 ARG TARGETOS
 ARG TARGETARCH
 # Stamped into the manager so a running pod can say what it is.
