@@ -1,0 +1,31 @@
+# What a run pod is allowed to do, which is close to nothing.
+#
+# It reads its IngestionSource to find the watermark to resume from, and it
+# reads and updates the ConfigMap holding the accepted record shape. It cannot
+# write status, cannot create anything, cannot delete anything, and cannot read
+# Secrets: credentials arrive as environment variables the kubelet projects, so
+# the pod never needs get on the Secret they came from.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  labels:
+    app.kubernetes.io/name: sluice
+    app.kubernetes.io/managed-by: kustomize
+  name: runner-role
+  namespace: system
+rules:
+- apiGroups:
+  - ingest.sluice.dev
+  resources:
+  - ingestionsources
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  verbs:
+  - get
+  - update

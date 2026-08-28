@@ -1,0 +1,62 @@
+# The same source pointed at BigQuery instead of stdout. Nothing else about the
+# object changes, which is the point of keeping the sink behind one field.
+#
+# Not applied by the demo script: it needs a real project, a dataset, and a
+# service account bound through Workload Identity.
+apiVersion: ingest.sluice.dev/v1alpha1
+kind: IngestionSource
+metadata:
+  name: vendor-events-bigquery
+  namespace: sluice-demo
+spec:
+  schedule: "0 2 * * *"
+
+  source:
+    type: HTTP
+    http:
+      url: https://api.vendor.example/v1/events
+      recordsPath: data.items
+      auth:
+        type: Bearer
+        secretRef:
+          name: vendor-api
+          key: token
+      pagination:
+        type: Cursor
+        nextCursorPath: meta.next_cursor
+        cursorParam: cursor
+        sizeParam: limit
+        pageSize: 500
+
+  watermark:
+    recordField: updated_at
+    param: since
+    format: RFC3339
+    initialValue: "2026-01-01T00:00:00Z"
+
+  destination:
+    type: BigQuery
+    bigQuery:
+      projectID: my-project
+      dataset: vendor
+      table: events
+      location: US
+      writeDisposition: Append
+      createIfMissing: true
+      # Records BigQuery refuses land here with the reason, instead of being
+      # counted and dropped.
+      deadLetterTable: events_dead_letter
+
+  # A new column is additive and safe. A column that disappears or changes type
+  # fails the run, because that is the change that corrupts a table quietly.
+  schema:
+    drift: EvolveAdditive
+
+  failurePolicy:
+    backoffLimit: 3
+    suspendAfterConsecutiveFailures: 5
+
+  runner:
+    # Bound to a Google service account with Workload Identity, so no key
+    # material exists anywhere in the cluster.
+    serviceAccountName: sluice-runner

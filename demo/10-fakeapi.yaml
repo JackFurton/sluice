@@ -1,0 +1,70 @@
+# A stand-in vendor API. It pages with an opaque cursor, filters inclusively on
+# "since", and grows a new record every second, so a schedule that runs every
+# minute finds roughly sixty new records each time.
+#
+# Pass --drift-after to make it change the record shape mid-demo: the amount
+# field starts arriving as a string and the email field disappears. That is the
+# failure this operator was built to catch.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fakeapi
+  namespace: sluice-demo
+  labels:
+    app.kubernetes.io/name: fakeapi
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: fakeapi
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: fakeapi
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: fakeapi
+        image: sluice:demo
+        imagePullPolicy: IfNotPresent
+        command: ["/fakeapi"]
+        args:
+        - --addr=:8080
+        - --seed=120
+        - --interval=1s
+        - --page-size=50
+        - --rate-limit-every=17
+        ports:
+        - containerPort: 8080
+          name: http
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: http
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fakeapi
+  namespace: sluice-demo
+spec:
+  selector:
+    app.kubernetes.io/name: fakeapi
+  ports:
+  - name: http
+    port: 8080
+    targetPort: http

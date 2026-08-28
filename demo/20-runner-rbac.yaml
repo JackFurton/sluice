@@ -1,0 +1,36 @@
+# Run pods get their own identity, scoped to reading their IngestionSource and
+# updating the ConfigMap that records the accepted record shape. No Secret
+# access: credentials reach the pod as environment variables the kubelet
+# projects, so the process never needs to read the Secret itself.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sluice-runner
+  namespace: sluice-demo
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: sluice-runner
+  namespace: sluice-demo
+rules:
+- apiGroups: ["ingest.sluice.dev"]
+  resources: ["ingestionsources"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: sluice-runner
+  namespace: sluice-demo
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: sluice-runner
+subjects:
+- kind: ServiceAccount
+  name: sluice-runner
+  namespace: sluice-demo

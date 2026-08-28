@@ -1,0 +1,53 @@
+apiVersion: ingest.sluice.dev/v1alpha1
+kind: IngestionSource
+metadata:
+  name: vendor-events
+spec:
+  schedule: "*/1 * * * *"
+
+  source:
+    type: HTTP
+    http:
+      url: http://fakeapi.sluice-demo.svc.cluster.local:8080/events
+      recordsPath: data.items
+      timeout: 30s
+      maxRequestsPerSecond: 20
+      pagination:
+        type: Cursor
+        nextCursorPath: meta.next_cursor
+        cursorParam: cursor
+        sizeParam: limit
+        pageSize: 50
+        maxPages: 200
+
+  # Each run asks only for records newer than the last successful run reached.
+  # The upstream treats "since" as inclusive, so the worker also drops the
+  # boundary record itself rather than appending it a second time.
+  watermark:
+    recordField: updated_at
+    param: since
+    toParam: until
+    format: RFC3339
+
+  # Stdout keeps the demo free of cloud accounts. Swapping in the BigQuery
+  # destination changes nothing else about how this object behaves.
+  destination:
+    type: Stdout
+
+  schema:
+    drift: EvolveAdditive
+
+  failurePolicy:
+    backoffLimit: 2
+    suspendAfterConsecutiveFailures: 3
+
+  runner:
+    image: sluice:demo
+    imagePullPolicy: IfNotPresent
+    serviceAccountName: sluice-runner
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        memory: 256Mi

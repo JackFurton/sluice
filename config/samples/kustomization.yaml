@@ -1,0 +1,4 @@
+## Append samples of your project ##
+resources:
+- ingest_v1alpha1_ingestionsource.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples
