@@ -17,7 +17,15 @@ updates:
     directory: /
     schedule:
       interval: monthly
+    groups:
+      # One PR a month for all of them. Sixteen separate PRs for action bumps
+      # is noise that trains people to stop reading Dependabot.
+      actions:
+        patterns: ["*"]
   - package-ecosystem: docker
     directory: /
     schedule:
       interval: monthly
+    groups:
+      base-images:
+        patterns: ["*"]
