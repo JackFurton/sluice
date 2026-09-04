@@ -5,10 +5,10 @@ go 1.26.0
 require (
 	cloud.google.com/go/bigquery v1.82.0
 	github.com/onsi/ginkgo/v2 v2.32.1
-	github.com/onsi/gomega v1.40.0
+	github.com/onsi/gomega v1.43.0
 	github.com/prometheus/client_golang v1.24.1
-	github.com/prometheus/client_model v0.6.2
-	google.golang.org/api v0.294.0
+	github.com/prometheus/client_model v0.6.3
+	google.golang.org/api v0.296.0
 	k8s.io/api v0.36.4
 	k8s.io/apimachinery v0.36.4
 	k8s.io/client-go v0.36.4
